@@ -18,10 +18,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set root password
-        run: |
-          echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo chpasswd
-          echo "::add-mask::${{ secrets.ROOT_PASSWORD }}"
+      - name: Set root password (safe)
+  run: |
+    if [ -z "${{ secrets.ROOT_PASSWORD }}" ]; then
+      echo "❌ Secret ROOT_PASSWORD belum diatur!"
+      echo "Tambahkan di Settings → Secrets → Actions → New secret → ROOT_PASSWORD"
+      exit 1
+    fi
+
+    echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo chpasswd || {
+      echo "⚠️ Gagal set password dengan chpasswd, mencoba alternatif..."
+      sudo passwd -d root || true
+      echo "${{ secrets.ROOT_PASSWORD }}" | sudo passwd --stdin root 2>/dev/null || {
+        echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo tee /etc/chpasswd > /dev/null
+      }
+    }
+
+    echo "::add-mask::${{ secrets.ROOT_PASSWORD }}"
+    echo "✅ Root password berhasil diatur."
 
       - name: Install essentials
         run: |
