@@ -18,8 +18,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set root password (safe)
-run: |
+      - name: Set root password
+        run: |
     if [ -z "${{ secrets.ROOT_PASSWORD }}" ]; then
       echo "❌ Secret ROOT_PASSWORD belum diatur!"
       echo "Tambahkan di Settings → Secrets → Actions → New secret → ROOT_PASSWORD"
