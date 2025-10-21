@@ -1,0 +1,125 @@
+name: Ubuntu SSH + Nginx + Cloudflare Setup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-server:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    env:
+      DOMAIN: tokoada.web.id
+      SUBDOMAIN: www.tokoada.web.id
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Set root password (optional)
+        run: |
+          if [ -n "${{ secrets.ROOT_PASSWORD }}" ]; then
+            echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo chpasswd
+            echo "::add-mask::${{ secrets.ROOT_PASSWORD }}"
+            echo "✅ Root password diatur."
+          else
+            echo "ℹ️ ROOT_PASSWORD tidak diatur, hanya SSH key login yang aktif."
+          fi
+
+      - name: 🧰 Install SSH + Nginx + tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server nginx ufw curl jq certbot python3-certbot-nginx
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+          sudo systemctl enable nginx
+          sudo systemctl restart nginx
+
+      - name: 🔑 Configure SSH access
+        run: |
+          sudo mkdir -p /root/.ssh
+          echo "${{ secrets.SSH_PUB_KEY }}" | sudo tee -a /root/.ssh/authorized_keys
+          sudo chmod 700 /root/.ssh
+          sudo chmod 600 /root/.ssh/authorized_keys
+          sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+          echo "✅ SSH configured. You can connect with: ssh root@<IP>"
+
+      - name: 🔥 Configure Firewall
+        run: |
+          sudo ufw allow 22/tcp
+          sudo ufw allow 80/tcp
+          sudo ufw allow 443/tcp
+          sudo ufw --force enable
+          echo "✅ Firewall rules applied."
+
+      - name: 🌍 Get Public IP
+        run: |
+          PUB_IP=$(curl -s ifconfig.me)
+          echo "PUBLIC_IP=${PUB_IP}" >> $GITHUB_ENV
+          echo "Server public IP: ${PUB_IP}"
+
+      - name: ☁️ Update Cloudflare DNS
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          DOMAIN=${{ env.DOMAIN }}
+          SUBDOMAIN=${{ env.SUBDOMAIN }}
+          IP=${{ env.PUBLIC_IP }}
+
+          for NAME in $DOMAIN $SUBDOMAIN; do
+            RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records?type=A&name=${NAME}" \
+              -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+            if [ "$RECORD_ID" = "null" ] || [ -z "$RECORD_ID" ]; then
+              echo "🆕 Creating DNS record for ${NAME}"
+              curl -s -X POST "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"${NAME}\",\"content\":\"${IP}\",\"ttl\":1,\"proxied\":true}"
+            else
+              echo "♻️ Updating existing DNS record for ${NAME}"
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${RECORD_ID}" \
+                -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"${NAME}\",\"content\":\"${IP}\",\"ttl\":1,\"proxied\":true}"
+            fi
+          done
+          echo "✅ Cloudflare DNS updated (Proxy ☁️ ON)"
+
+      - name: 🏗️ Configure Nginx Default Page
+        run: |
+          DOMAIN=${{ env.DOMAIN }}
+          sudo mkdir -p /var/www/${DOMAIN}
+          echo "<h1>Selamat Datang di ${DOMAIN}</h1><p>Server aktif dengan SSH + Nginx + Cloudflare ☁️</p>" | sudo tee /var/www/${DOMAIN}/index.html
+          
+          cat <<EOF | sudo tee /etc/nginx/sites-available/${DOMAIN}
+          server {
+              listen 80;
+              server_name ${DOMAIN} www.${DOMAIN};
+              root /var/www/${DOMAIN};
+              index index.html;
+              location / {
+                  try_files \$uri \$uri/ =404;
+              }
+          }
+          EOF
+
+          sudo ln -s /etc/nginx/sites-available/${DOMAIN} /etc/nginx/sites-enabled/ || true
+          sudo nginx -t
+          sudo systemctl restart nginx
+          echo "✅ Website configured at /var/www/${DOMAIN}"
+
+      - name: 🔐 Enable SSL (Let's Encrypt)
+        run: |
+          sudo certbot --nginx --non-interactive --agree-tos -m admin@${{ env.DOMAIN }} -d ${{ env.DOMAIN }} -d ${{ env.SUBDOMAIN }} || true
+          echo "✅ SSL applied via Let's Encrypt"
+
+      - name: 📋 Summary
+        run: |
+          echo "## 🧭 Server Setup Complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Domain: https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Cloudflare Proxy: ON ☁️" >> $GITHUB_STEP_SUMMARY
+          echo "- SSH (root): ssh root@${{ env.PUBLIC_IP }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Web Root: /var/www/${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SSL: Active ✅" >> $GITHUB_STEP_SUMMARY
