@@ -20,22 +20,22 @@ jobs:
 
       - name: Set root password
         run: |
-    if [ -z "${{ secrets.ROOT_PASSWORD }}" ]; then
-      echo "❌ Secret ROOT_PASSWORD belum diatur!"
-      echo "Tambahkan di Settings → Secrets → Actions → New secret → ROOT_PASSWORD"
-      exit 1
-    fi
+          if [ -z "${{ secrets.ROOT_PASSWORD }}" ]; then
+            echo "❌ Secret ROOT_PASSWORD belum diatur!"
+            echo "Tambahkan di Settings → Secrets → Actions → New secret → ROOT_PASSWORD"
+            exit 1
+          fi
 
-    echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo chpasswd || {
-      echo "⚠️ Gagal set password dengan chpasswd, mencoba alternatif..."
-      sudo passwd -d root || true
-      echo "${{ secrets.ROOT_PASSWORD }}" | sudo passwd --stdin root 2>/dev/null || {
-        echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo tee /etc/chpasswd > /dev/null
-      }
-    }
+          echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo chpasswd || {
+            echo "⚠️ Gagal set password dengan chpasswd, mencoba alternatif..."
+            sudo passwd -d root || true
+            echo "${{ secrets.ROOT_PASSWORD }}" | sudo passwd --stdin root 2>/dev/null || {
+              echo "root:${{ secrets.ROOT_PASSWORD }}" | sudo tee /etc/chpasswd > /dev/null
+            }
+          }
 
-    echo "::add-mask::${{ secrets.ROOT_PASSWORD }}"
-    echo "✅ Root password berhasil diatur."
+          echo "::add-mask::${{ secrets.ROOT_PASSWORD }}"
+          echo "✅ Root password berhasil diatur."
 
       - name: Install essentials
         run: |
@@ -105,93 +105,3 @@ jobs:
           done
 
           echo "✅ Cloudflare DNS synchronized (proxied 🔶)"
-
-      - name: Install WordPress + Admin (first run only)
-        run: |
-          DOMAIN=${{ env.DOMAIN }}
-          if [ ! -d "/www/wwwroot/${DOMAIN}" ]; then
-            DB_PASS="wp$(openssl rand -hex 6)"
-            ADMIN_PASS=$(openssl rand -base64 12)
-            echo "::add-mask::${ADMIN_PASS}"
-
-            sudo apt-get install -y mysql-client php php-mysql php-cli php-curl php-gd php-mbstring php-xml php-zip php-intl
-            sudo mysql -e "CREATE DATABASE wordpress DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-            sudo mysql -e "CREATE USER 'wpuser'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-            sudo mysql -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'wpuser'@'localhost'; FLUSH PRIVILEGES;"
-
-            sudo mkdir -p /www/wwwroot/${DOMAIN}
-            cd /www/wwwroot/${DOMAIN}
-            sudo wget https://wordpress.org/latest.tar.gz
-            sudo tar -xzf latest.tar.gz --strip-components=1
-            sudo chown -R www-data:www-data /www/wwwroot/${DOMAIN}
-
-            sudo cp wp-config-sample.php wp-config.php
-            sudo sed -i "s/database_name_here/wordpress/" wp-config.php
-            sudo sed -i "s/username_here/wpuser/" wp-config.php
-            sudo sed -i "s/password_here/${DB_PASS}/" wp-config.php
-
-            sudo bash -c 'cat > /etc/apache2/sites-available/'${DOMAIN}'.conf <<EOF
-            <VirtualHost *:80>
-                ServerName '${DOMAIN}'
-                ServerAlias 'www.'${DOMAIN}
-                DocumentRoot /www/wwwroot/'${DOMAIN}'
-                <Directory /www/wwwroot/'${DOMAIN}'>
-                    AllowOverride All
-                </Directory>
-            </VirtualHost>
-            EOF'
-
-            sudo a2ensite ${DOMAIN}.conf
-            sudo a2enmod rewrite
-            sudo systemctl reload apache2
-
-            # Install WP-CLI
-            curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-            chmod +x wp-cli.phar
-            sudo mv wp-cli.phar /usr/local/bin/wp
-
-            # Create admin user
-            sudo -u www-data wp core install --url="https://${DOMAIN}" \
-              --title="TokoAda Web" \
-              --admin_user="admin" \
-              --admin_password="${ADMIN_PASS}" \
-              --admin_email="admin@${DOMAIN}" \
-              --path="/www/wwwroot/${DOMAIN}"
-
-            echo "Admin user: admin"
-            echo "Admin password: ${ADMIN_PASS}" > /tmp/wp-admin-credentials.txt
-          else
-            echo "WordPress already installed."
-          fi
-
-      - name: Renew SSL (Let's Encrypt)
-        run: |
-          sudo apt-get install -y certbot python3-certbot-apache
-          sudo certbot renew --quiet --no-self-upgrade || \
-          sudo certbot --apache --non-interactive --agree-tos -m admin@${{ env.DOMAIN }} -d ${{ env.DOMAIN }} -d ${{ env.SUBDOMAIN }}
-          echo "✅ SSL certificate renewed (Let's Encrypt)"
-
-      - name: Backup site
-        run: |
-          TS=$(date -u +'%Y%m%dT%H%M%SZ')
-          OUT="/tmp/aapanel-wp-auto-${TS}.tar.gz"
-          sudo tar -czf "$OUT" -C / www root etc var/lib/mysql
-          echo "BACKUP_FILE=$OUT" >> $GITHUB_ENV
-          ls -lh "$OUT"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wordpress-auto-backup
-          path: |
-            /tmp/wp-admin-credentials.txt
-            ${{ env.BACKUP_FILE }}
-
-      - name: Summary report
-        run: |
-          echo "## 🔁 Auto Maintenance Report" >> $GITHUB_STEP_SUMMARY
-          echo "- **Domain:** https://${{ env.DOMAIN }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Subdomain:** https://${{ env.SUBDOMAIN }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Cloudflare Proxy:** Enabled 🔶" >> $GITHUB_STEP_SUMMARY
-          echo "- **SSL:** Renewed ✅" >> $GITHUB_STEP_SUMMARY
-          echo "- **Backup:** Uploaded to Artifacts 📦" >> $GITHUB_STEP_SUMMARY
